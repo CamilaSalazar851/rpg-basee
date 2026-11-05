@@ -18,15 +18,15 @@ public class EstadoEfecto {
         this.turnosRestantes = duracion;
     }
 
-    public EstadoEfecto copia() {
+    public synchronized EstadoEfecto copia() {
         return new EstadoEfecto(nombre, tipo, valorPorTick, turnosRestantes);
     }
 
-    public void consumirTurno() {
+    public synchronized void consumirTurno() {
         turnosRestantes--;
     }
 
-    public boolean haTerminado() {
+    public synchronized boolean haTerminado() {
         return turnosRestantes <= 0;
     }
 
@@ -42,7 +42,7 @@ public class EstadoEfecto {
         return valorPorTick;
     }
 
-    public int getTurnosRestantes() {
+    public synchronized int getTurnosRestantes() {
         return turnosRestantes;
     }
 }

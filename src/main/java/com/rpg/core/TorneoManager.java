@@ -22,12 +22,44 @@ public class TorneoManager {
     public Personaje jugarTorneo() {
         List<Personaje> gladiadores = crearGladiadores().getMiembros();
 
-        // TALLER CONCURRENCIA: las dos semifinales se simulan una tras otra en el hilo principal.
-        // La final solo puede empezar cuando ambas hayan terminado.
-        Personaje finalista1 = simularSemifinal(gladiadores.get(0), gladiadores.get(1));
-        Personaje finalista2 = simularSemifinal(gladiadores.get(2), gladiadores.get(3));
+        // Las dos semifinales corren en paralelo, cada una en su Thread. Cada hilo escribe su ganador en su
+        // propia posicion del arreglo; el hilo principal solo lo lee despues de los join().
+        Personaje[] ganadores = new Personaje[2];
+        Thread semifinalA = new Thread(() -> ganadores[0] = simularSemifinal(gladiadores.get(0), gladiadores.get(1)),
+                "semifinal-A");
+        Thread semifinalB = new Thread(() -> ganadores[1] = simularSemifinal(gladiadores.get(2), gladiadores.get(3)),
+                "semifinal-B");
 
-        return simularFinal(finalista1, finalista2);
+        registro.agregar("Estado antes de start(): A=%s B=%s", semifinalA.getState(), semifinalB.getState());
+        semifinalA.start();
+        semifinalB.start();
+        esperarUnPoco();
+        registro.agregar("Estado durante la ejecucion: A=%s B=%s", semifinalA.getState(), semifinalB.getState());
+
+        try {
+            semifinalA.join();
+            semifinalB.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            semifinalA.interrupt();
+            semifinalB.interrupt();
+            throw new IllegalStateException("El torneo fue interrumpido", e);
+        }
+        registro.agregar("Estado despues de join(): A=%s B=%s", semifinalA.getState(), semifinalB.getState());
+
+        if (ganadores[0] == null || ganadores[1] == null) {
+            throw new IllegalStateException("Una semifinal termino con error");
+        }
+        return simularFinal(ganadores[0], ganadores[1]);
+    }
+
+    /** Deja correr un instante a las semifinales para poder ver su estado (RUNNABLE o TIMED_WAITING). */
+    private void esperarUnPoco() {
+        try {
+            Thread.sleep(200);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public Personaje simularSemifinal(Personaje a, Personaje b) {

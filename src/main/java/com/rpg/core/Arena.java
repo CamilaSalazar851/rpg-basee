@@ -14,6 +14,8 @@ public class Arena {
     private static final int VARIACION_DANIO = 3;
     private static final int PROBABILIDAD_ESPECIAL_IA = 35;
     private static final int MAXIMO_RONDAS = 40;
+    // Pausa entre rondas del duelo automatico: da tiempo a que los hilos de DoT/HoT apliquen sus ticks.
+    private static final long PAUSA_RONDA_MS = 500;
 
     private final RegistroCombate registro;
     private final Random azar;
@@ -25,10 +27,8 @@ public class Arena {
 
     /** Procesa efectos y aturdimiento. @return true si el personaje puede actuar este turno */
     public boolean iniciarTurno(Personaje personaje) {
+        personaje.setObservadorEfectos(registro::agregar);
         personaje.alIniciarTurno();
-        for (String mensaje : personaje.procesarEfectos()) {
-            registro.agregar(mensaje);
-        }
         if (!personaje.estaVivo()) {
             registro.agregar("%s cae derrotado por sus efectos", personaje.getNombre());
             return false;
@@ -53,6 +53,7 @@ public class Arena {
 
     /** @return true si el especial se ejecuto; false si fallo por falta de mana o de vida */
     public boolean intentarEspecial(Personaje atacante, Personaje defensor) {
+        defensor.setObservadorEfectos(registro::agregar);
         try {
             registro.agregar(atacante.realizarAtaqueEspecial(defensor));
             registro.agregar("   %s", FormatoCombate.resumen(defensor));
@@ -81,7 +82,24 @@ public class Arena {
             registro.agregar("-- Ronda %d --", ronda);
             turnoAutomatico(a, b);
             turnoAutomatico(b, a);
+            if (!pausarRonda()) {
+                break;
+            }
         }
+        a.cancelarEfectos();
+        b.cancelarEfectos();
         return a.getVida() >= b.getVida() ? a : b;
+    }
+
+    /** @return false si el hilo fue interrumpido y el duelo debe terminar */
+    private boolean pausarRonda() {
+        try {
+            Thread.sleep(PAUSA_RONDA_MS);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            registro.agregar("Duelo interrumpido.");
+            return false;
+        }
     }
 }

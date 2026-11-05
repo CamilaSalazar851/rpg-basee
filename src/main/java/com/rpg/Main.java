@@ -12,6 +12,7 @@ public class Main {
         try (Scanner scanner = new Scanner(System.in)) {
             Consola consola = new Consola(scanner);
             MotorJuego motor = new MotorJuego(consola);
+            motor.iniciarAutoGuardado();
             ejecutarMenu(consola, motor);
         } catch (NoSuchElementException e) {
             System.out.println("\nEntrada finalizada. Hasta luego.");

@@ -1,5 +1,7 @@
 package com.rpg.core;
 
+import com.rpg.concurrency.AutoGuardadoDaemon;
+import com.rpg.concurrency.GestorTurno;
 import com.rpg.entities.Enemigo;
 import com.rpg.entities.EstadoEfecto;
 import com.rpg.entities.Gremio;
@@ -15,12 +17,15 @@ import com.rpg.items.Pocion;
 
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Coordina el flujo del juego: crear heroe, combatir, torneo, bestiario y guardado. */
 public class MotorJuego {
 
     private static final String NOMBRE_GREMIO = "Guardianes del Alba";
     private static final int CURACION_POCION_VIDA = 30;
+    private static final int TIEMPO_TURNO_SEGUNDOS = 15;
+    private static final long INTERVALO_AUTOGUARDADO_MS = 10_000;
 
     private final Consola consola;
     private final RegistroCombate registro = new RegistroCombate();
@@ -31,7 +36,11 @@ public class MotorJuego {
     private final TorneoManager torneo = new TorneoManager(arena, registro);
     // TALLER ARCHIVOS: ultimoGuardado es solo el estado de la partida en memoria. Aqui (o en un metodo
     // nuevo como cargarProgreso) iria la carga de una partida guardada en disco; llamala desde Main.
-    private String ultimoGuardado = "";
+    private volatile String ultimoGuardado = "";   // lo escribe el hilo de auto-guardado y lo lee el principal
+    private final GestorTurno gestorTurno = new GestorTurno();
+    private final AtomicBoolean tiempoAgotado = new AtomicBoolean(false);
+    private volatile Personaje jugadorActivo;
+    private volatile Enemigo enemigoActivo;
 
     public MotorJuego(Consola consola) {
         this.consola = consola;
@@ -44,9 +53,14 @@ public class MotorJuego {
         Personaje jugador = crearJugador();
         Enemigo enemigo = elegirEnemigo();
         registro.agregar("%n=== %s vs %s ===", jugador.getNombre(), enemigo.getNombre());
+        jugadorActivo = jugador;
+        enemigoActivo = enemigo;
 
         boolean huyo = combatir(jugador, enemigo);
 
+        // Fin del combate: se interrumpen los hilos de efectos que sigan vivos.
+        jugador.cancelarEfectos();
+        enemigo.cancelarEfectos();
         cerrarCombate(jugador, enemigo, huyo);
         guardarProgreso();
     }
@@ -159,6 +173,10 @@ public class MotorJuego {
                 }
                 case ESPECIAL -> arena.intentarEspecial(jugador, enemigo);
                 case POCION -> usarPocion(jugador);
+                case TIEMPO_AGOTADO -> {
+                    registro.agregar("%s se quedo sin tiempo y pierde el turno", jugador.getNombre());
+                    yield true;
+                }
                 default -> {
                     mostrarEstado(jugador);
                     yield false;
@@ -169,13 +187,24 @@ public class MotorJuego {
     }
 
     /**
-     * Pide la accion al jugador y se queda esperando hasta que escriba algo.
+     * Pide la accion al jugador con un temporizador de turno. Si responde a tiempo se interrumpe el
+     * temporizador; si no, el callback avisa y el turno se pierde. Ojo: Scanner no se puede abortar mientras
+     * espera el teclado, asi que tras el aviso hay que pulsar Enter para que el juego continue.
      */
     private Accion pedirAccion() {
-        // TALLER CONCURRENCIA: esta lectura bloquea el programa sin limite de tiempo.
-        // Aqui debe entrar el temporizador de turno con su callback.
+        tiempoAgotado.set(false);
+        System.out.printf("Tienes %d segundos para elegir.%n", TIEMPO_TURNO_SEGUNDOS);
         System.out.println("1. Atacar  2. Habilidad especial  3. Usar pocion  4. Ver estado  0. Huir");
-        int opcion = consola.leerEntero("Accion: ", 0, 4);
+        gestorTurno.iniciar(TIEMPO_TURNO_SEGUNDOS, this::alAgotarseElTiempo);
+        int opcion;
+        try {
+            opcion = consola.leerEntero("Accion: ", 0, 4);
+        } finally {
+            gestorTurno.cancelar();
+        }
+        if (tiempoAgotado.get()) {
+            return Accion.TIEMPO_AGOTADO;
+        }
         return switch (opcion) {
             case 1 -> Accion.ATACAR;
             case 2 -> Accion.ESPECIAL;
@@ -183,6 +212,12 @@ public class MotorJuego {
             case 4 -> Accion.ESTADO;
             default -> Accion.HUIR;
         };
+    }
+
+    /** Callback del temporizador: corre en el hilo del temporizador, por eso usa un AtomicBoolean. */
+    private void alAgotarseElTiempo() {
+        tiempoAgotado.set(true);
+        System.out.println("\nSe acabo el tiempo! Pulsa Enter para continuar.");
     }
 
     private boolean usarPocion(Personaje jugador) {
@@ -259,7 +294,16 @@ public class MotorJuego {
     public void guardarProgreso() {
         // TALLER ARCHIVOS: ademas de dejar el texto en memoria, escribe la partida en disco (por ejemplo un
         // .txt con BufferedWriter, y/o un .dat serializando el estado con ObjectOutputStream). Usa try-with-resources.
-        // TALLER CONCURRENCIA: este guardado es manual. Debera hacerse solo, de fondo, mientras se juega.
+        ultimoGuardado = construirInstantanea();
+        System.out.println("[Progreso guardado en memoria]");
+    }
+
+    /** Arranca el hilo daemon que guarda la partida en memoria cada cierto tiempo, sin molestar al jugador. */
+    public void iniciarAutoGuardado() {
+        new AutoGuardadoDaemon(INTERVALO_AUTOGUARDADO_MS, () -> ultimoGuardado = construirInstantanea()).iniciar();
+    }
+
+    private String construirInstantanea() {
         StringBuilder contenido = new StringBuilder();
         contenido.append("=== PARTIDA RPG ===").append(System.lineSeparator());
         contenido.append("Victorias: ").append(perfil.getVictorias()).append(System.lineSeparator());
@@ -268,10 +312,16 @@ public class MotorJuego {
         contenido.append("Gremio ").append(gremio.getNombre()).append(": ")
                 .append(gremio.getMiembros().size()).append(" miembros").append(System.lineSeparator());
         contenido.append("Enemigos derrotados: ").append(bestiario.resumenDerrotados()).append(System.lineSeparator());
+        Personaje jugador = jugadorActivo;
+        Enemigo enemigo = enemigoActivo;
+        if (jugador != null && enemigo != null) {
+            contenido.append(System.lineSeparator()).append("--- Personajes ---").append(System.lineSeparator());
+            contenido.append(FormatoCombate.resumen(jugador)).append(System.lineSeparator());
+            contenido.append(FormatoCombate.resumen(enemigo)).append(System.lineSeparator());
+        }
         contenido.append(System.lineSeparator()).append("--- Ultimo combate ---").append(System.lineSeparator());
         contenido.append(registro.getTexto());
-        ultimoGuardado = contenido.toString();
-        System.out.println("[Progreso guardado en memoria]");
+        return contenido.toString();
     }
 
     public String getUltimoGuardado() {
