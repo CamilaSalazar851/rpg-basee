@@ -42,11 +42,11 @@ public class Bestiario {
         return null;
     }
 
-    public void registrarEnemigoDerrotado(String nombre) {
+    public synchronized void registrarEnemigoDerrotado(String nombre) {
         derrotados.put(nombre, derrotados.getOrDefault(nombre, 0) + 1);
     }
 
-    public int vecesDerrotado(String nombre) {
+    public synchronized int vecesDerrotado(String nombre) {
         return derrotados.getOrDefault(nombre, 0);
     }
 
@@ -62,7 +62,18 @@ public class Bestiario {
         return texto.toString();
     }
 
-    public String resumenDerrotados() {
+    /** Copia del contador de derrotas, para guardarlo en la partida. */
+    public synchronized Map<String, Integer> copiaDerrotados() {
+        return new LinkedHashMap<>(derrotados);
+    }
+
+    /** Reemplaza el contador de derrotas por el de una partida cargada. */
+    public synchronized void cargarDerrotados(Map<String, Integer> guardados) {
+        derrotados.clear();
+        derrotados.putAll(guardados);
+    }
+
+    public synchronized String resumenDerrotados() {
         if (derrotados.isEmpty()) {
             return "ninguno";
         }

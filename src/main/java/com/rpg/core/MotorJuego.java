@@ -8,6 +8,10 @@ import com.rpg.entities.Gremio;
 import com.rpg.entities.Guerrero;
 import com.rpg.entities.Mago;
 import com.rpg.entities.PerfilJugador;
+import com.rpg.persistencia.EstadoPartida;
+import com.rpg.persistencia.GestorArchivos;
+import com.rpg.persistencia.LogCombateArchivo;
+import com.rpg.persistencia.PartidaRepositorio;
 import com.rpg.entities.Personaje;
 import com.rpg.entities.enums.RaridadItem;
 import com.rpg.entities.enums.TipoEfecto;
@@ -16,6 +20,8 @@ import com.rpg.items.Inventario;
 import com.rpg.items.Pocion;
 
 import java.util.List;
+import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -31,8 +37,12 @@ public class MotorJuego {
     private final RegistroCombate registro = new RegistroCombate();
     private final Arena arena = new Arena(registro, new Random());
     private final Bestiario bestiario = new Bestiario();
-    private final PerfilJugador perfil = new PerfilJugador();
-    private final Gremio gremio = new Gremio(NOMBRE_GREMIO);
+    private volatile PerfilJugador perfil = new PerfilJugador();   // se reemplazan al cargar una partida
+    private volatile Gremio gremio = new Gremio(NOMBRE_GREMIO);
+    private final PartidaRepositorio repositorio = new PartidaRepositorio();
+    private final LogCombateArchivo logArchivo = new LogCombateArchivo();
+    // El auto-guardado solo escribe a disco si ya hubo progreso: asi no pisa una partida guardada antes de cargarla.
+    private final AtomicBoolean partidaModificada = new AtomicBoolean(false);
     private final TorneoManager torneo = new TorneoManager(arena, registro);
     // TALLER ARCHIVOS: ultimoGuardado es solo el estado de la partida en memoria. Aqui (o en un metodo
     // nuevo como cargarProgreso) iria la carga de una partida guardada en disco; llamala desde Main.
@@ -296,11 +306,87 @@ public class MotorJuego {
         // .txt con BufferedWriter, y/o un .dat serializando el estado con ObjectOutputStream). Usa try-with-resources.
         ultimoGuardado = construirInstantanea();
         System.out.println("[Progreso guardado en memoria]");
+        partidaModificada.set(true);
+        if (repositorio.guardar(crearEstado())) {
+            System.out.println("[Partida guardada en disco: " + GestorArchivos.PARTIDA.getPath() + "]");
+        }
+        logArchivo.guardar(registro.getTexto(), true);
+    }
+
+    private EstadoPartida crearEstado() {
+        return new EstadoPartida(perfil, gremio, bestiario.copiaDerrotados());
+    }
+
+    /** Al salir: si hubo progreso, deja la partida en disco (el candado evita chocar con el auto-guardado). */
+    public void guardarAlSalir() {
+        if (partidaModificada.get()) {
+            repositorio.guardar(crearEstado());
+        }
+    }
+
+    public void cargarPartida() {
+        Optional<EstadoPartida> cargada = repositorio.cargar();
+        if (cargada.isEmpty()) {
+            return;
+        }
+        EstadoPartida estado = cargada.get();
+        perfil = estado.getPerfil();
+        gremio = estado.getGremio();
+        bestiario.cargarDerrotados(estado.getDerrotados());
+        partidaModificada.set(true);
+        System.out.printf("Partida cargada: %d victorias, %d derrotas, gremio %s con %d miembros.%n",
+                perfil.getVictorias(), perfil.getDerrotas(), gremio.getNombre(), gremio.getMiembros().size());
+    }
+
+    public void mostrarHistorial() {
+        List<String> lineas = logArchivo.leer();
+        if (lineas.isEmpty()) {
+            System.out.println("El historial esta vacio.");
+            return;
+        }
+        System.out.println("\n=== HISTORIAL DE COMBATES ===");
+        for (String linea : lineas) {
+            System.out.println(linea);
+        }
+    }
+
+    public void mostrarInfoArchivos() {
+        System.out.println("\n=== ARCHIVOS DEL JUEGO ===");
+        System.out.println(GestorArchivos.describir(GestorArchivos.PARTIDA));
+        System.out.println(GestorArchivos.describir(GestorArchivos.LOG));
+    }
+
+    /** Borra la partida o el historial, pidiendo confirmacion antes. */
+    public void borrarArchivos() {
+        System.out.println("1. Borrar partida guardada  2. Borrar historial  0. Cancelar");
+        int opcion = consola.leerEntero("Opcion: ", 0, 2);
+        if (opcion == 0) {
+            return;
+        }
+        String respuesta = consola.leerLinea("Seguro que quieres borrarlo? (s/n): ").trim();
+        if (!respuesta.equalsIgnoreCase("s")) {
+            System.out.println("No se borro nada.");
+            return;
+        }
+        boolean borrado = opcion == 1
+                ? GestorArchivos.borrarConNio(GestorArchivos.PARTIDA)
+                : GestorArchivos.borrarConFile(GestorArchivos.LOG);
+        if (borrado) {
+            System.out.println("Archivo borrado.");
+        }
     }
 
     /** Arranca el hilo daemon que guarda la partida en memoria cada cierto tiempo, sin molestar al jugador. */
     public void iniciarAutoGuardado() {
-        new AutoGuardadoDaemon(INTERVALO_AUTOGUARDADO_MS, () -> ultimoGuardado = construirInstantanea()).iniciar();
+        new AutoGuardadoDaemon(INTERVALO_AUTOGUARDADO_MS, this::autoGuardar).iniciar();
+    }
+
+    /** Corre en el hilo daemon: copia en memoria y, si hay progreso, tambien a disco. */
+    private void autoGuardar() {
+        ultimoGuardado = construirInstantanea();
+        if (partidaModificada.get()) {
+            repositorio.guardar(crearEstado());
+        }
     }
 
     private String construirInstantanea() {

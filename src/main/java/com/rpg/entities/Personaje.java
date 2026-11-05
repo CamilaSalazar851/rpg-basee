@@ -1,5 +1,10 @@
 package com.rpg.entities;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+
 import com.rpg.concurrency.EfectoContinuoTask;
 import com.rpg.entities.enums.EstadoPersonaje;
 import com.rpg.entities.enums.TipoPersonaje;
@@ -22,7 +27,9 @@ import java.util.function.Consumer;
 // (con serialVersionUID). Piensa que campos son transient y que clases anidadas (Inventario, Pocion, Arma,
 // Gremio, EstadoEfecto, enums) tambien deben ser Serializable, o tendras NotSerializableException.
 // Ojo: Gremio y Personaje se referencian entre si (la serializacion maneja el ciclo).
-public abstract class Personaje implements ICombatiente {
+public abstract class Personaje implements ICombatiente, Serializable {
+    private static final long serialVersionUID = 1L;
+
 
     private static final int VIDA_BASE = 100;
     private static final int ATAQUE_BASE = 10;
@@ -44,9 +51,11 @@ public abstract class Personaje implements ICombatiente {
     private Gremio gremio;              // asociacion bidireccional 0..1
     private final Inventario<Pocion> inventario = new Inventario<>(CAPACIDAD_INVENTARIO); // composicion
     private final Set<String> habilidades = new HashSet<>();
-    private final Map<String, EstadoEfecto> efectos = new LinkedHashMap<>();
-    private final Map<String, Thread> hilosEfectos = new HashMap<>();   // un hilo por efecto activo
-    private volatile Consumer<String> observadorEfectos = System.out::println;
+    // transient: los efectos viven en hilos que no se pueden guardar en disco. Al cargar la partida estos campos
+    // vuelven a su valor por defecto (vacios) y readObject los recrea.
+    private transient Map<String, EstadoEfecto> efectos = new LinkedHashMap<>();
+    private transient Map<String, Thread> hilosEfectos = new HashMap<>();   // un hilo por efecto activo
+    private transient volatile Consumer<String> observadorEfectos = System.out::println;
 
     protected Personaje(String nombre, TipoPersonaje tipo) {
         this(nombre, tipo, VIDA_BASE, ATAQUE_BASE, DEFENSA_BASE);
@@ -132,6 +141,20 @@ public abstract class Personaje implements ICombatiente {
     @Override
     public synchronized boolean estaVivo() {
         return estado != EstadoPersonaje.MUERTO;
+    }
+
+    /** Se guarda con el candado tomado para que ningun hilo cambie la vida a mitad de la copia. */
+    private synchronized void writeObject(ObjectOutputStream salida) throws IOException {
+        salida.defaultWriteObject();
+    }
+
+    /** Los campos transient no se restauran solos: se recrean vacios y el estado se normaliza. */
+    private void readObject(ObjectInputStream entrada) throws IOException, ClassNotFoundException {
+        entrada.defaultReadObject();
+        efectos = new LinkedHashMap<>();
+        hilosEfectos = new HashMap<>();
+        observadorEfectos = System.out::println;
+        normalizarEstado();
     }
 
     // ---- efectos DoT / HoT (cada efecto corre en su propio hilo, ver EfectoContinuoTask)

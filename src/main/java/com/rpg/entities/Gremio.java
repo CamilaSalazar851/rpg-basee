@@ -1,12 +1,18 @@
 package com.rpg.entities;
 
+import java.io.IOException;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 /** Agregacion: el gremio guarda referencias a personajes que existen por su cuenta. */
 // TALLER ARCHIVOS: candidata a Serializable (guarda la lista de Personaje, que tambien debe serlo).
-public class Gremio {
+public class Gremio implements Serializable {
+    private static final long serialVersionUID = 1L;
+
 
     private final String nombre;
     private final List<Personaje> miembros = new ArrayList<>();
@@ -15,7 +21,7 @@ public class Gremio {
         this.nombre = nombre;
     }
 
-    public void agregarMiembro(Personaje personaje) {
+    public synchronized void agregarMiembro(Personaje personaje) {
         if (personaje == null || miembros.contains(personaje)) {
             return;
         }
@@ -25,7 +31,7 @@ public class Gremio {
         }
     }
 
-    public void removerMiembro(Personaje personaje) {
+    public synchronized void removerMiembro(Personaje personaje) {
         if (!miembros.remove(personaje)) {
             return;
         }
@@ -34,11 +40,16 @@ public class Gremio {
         }
     }
 
+    /** Con el candado tomado: el auto-guardado no copia la lista mientras el hilo principal la modifica. */
+    private synchronized void writeObject(ObjectOutputStream salida) throws IOException {
+        salida.defaultWriteObject();
+    }
+
     public String getNombre() {
         return nombre;
     }
 
-    public List<Personaje> getMiembros() {
+    public synchronized List<Personaje> getMiembros() {
         return Collections.unmodifiableList(miembros);
     }
 }
